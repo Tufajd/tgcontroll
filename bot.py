@@ -1,9 +1,10 @@
-            import asyncio
+import asyncio
 import subprocess
 import logging
+import socket
+import time
 import os
 import sys
-import time
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -11,21 +12,34 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, Con
 TOKEN = "7566074976:AAE-Oj3Vo7BRz6eMG8S2nyjta05S-ZpmqGA"
 ALLOWED_USERS = [6504292955]
 
-BASE_DIR = "/storage/emulated/0/TG_MANAGER"
-LOG_DIR = "logs"
-LOG_FILE = f"{LOG_DIR}/session.log"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_FILE = os.path.join(LOG_DIR, "actions.log")
 
-os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
-    format="%(asctime)s | %(message)s",
+    format="%(asctime)s | %(message)s"
 )
 
-def log(msg):
-    logging.info(msg)
+def get_ip():
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except:
+        return "unknown"
+
+def log(user, cmd, result):
+    logging.info(f"user={user} | ip={get_ip()} | cmd={cmd} | result={result[:200]}")
+
+def cmd_exists(cmd):
+    return subprocess.call(
+        f"command -v {cmd}",
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    ) == 0
 
 async def run(cmd, timeout=8):
     try:
@@ -37,28 +51,35 @@ async def run(cmd, timeout=8):
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
         data = out.decode().strip() or err.decode().strip()
         if not data:
-            return False, "command returned empty output"
+            return False, "команда выполнилась, но вернула пустой результат"
         return True, data
     except asyncio.TimeoutError:
-        return False, "timeout"
+        return False, "таймаут выполнения команды"
     except Exception as e:
         return False, str(e)
 
-async def progress(msg):
-    for p in range(0, 96, 5):
-        bar = "▰" * (p // 10) + "▱" * (10 - p // 10)
+async def progress(msg, duration=4):
+    start = time.time()
+    while True:
+        percent = min(int(((time.time() - start) / duration) * 100), 99)
+        bar = "▰" * (percent // 10) + "▱" * (10 - percent // 10)
         try:
-            await msg.edit_text(f"⏳ Выполняется...\n{bar} {p}%")
+            await msg.edit_text(f"⏳ Выполняется...\n{bar} {percent}%")
         except:
             pass
-        await asyncio.sleep(0.25)
+        if percent >= 99:
+            break
+        await asyncio.sleep(0.3)
 
 keyboard = ReplyKeyboardMarkup(
     [
-        ["🟢 Пинг", "💻 Термукс"],
-        ["📂 Файлы", "📸 Скриншот"],
-        ["🔌 ADB", "🛰 Watchdog"],
-        ["♻ Перезапуск"]
+        ["🟢 Пинг", "🔋 Батарея"],
+        ["📡 Сеть", "📍 Геолокация"],
+        ["🔊 Громкость", "📋 Буфер"],
+        ["📷 Камера", "📸 Скриншот"],
+        ["📱 Устройство", "📳 Вибрация"],
+        ["🔔 Уведомление"],
+        ["🛰 Watchdog", "♻ Перезапуск"]
     ],
     resize_keyboard=True
 )
@@ -67,16 +88,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS:
         return
 
+    api_ok = cmd_exists("termux-battery-status")
+    api_status = "OK" if api_ok else "НЕ НАЙДЕН"
+
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    context.user_data["cwd"] = BASE_DIR
-    context.user_data["mode"] = None
 
     await update.message.reply_text(
         f"Бот успешно запущен и готов к работе\n\n"
         f"Дата: {now}\n"
         f"Пользователь: {update.effective_user.username}\n"
         f"ID пользователя: {update.effective_user.id}\n"
-        f"ID чата: {update.effective_chat.id}",
+        f"ID чата: {update.effective_chat.id}\n\n"
+        f"Termux API: {api_status}",
         reply_markup=keyboard
     )
 
@@ -85,96 +108,120 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text
-    cwd = context.user_data.get("cwd", BASE_DIR)
-    mode = context.user_data.get("mode")
+    uid = update.effective_user.id
 
-    msg = await update.message.reply_text("⏳ Выполняется...")
-    asyncio.create_task(progress(msg))
+    msg = await update.message.reply_text("⏳ Выполняется...\n▱▱▱▱▱▱▱▱▱▱ 0%")
+    prog = asyncio.create_task(progress(msg))
+
+    ok = True
+    out = ""
+
+    def api_guard(cmd):
+        if not cmd_exists(cmd):
+            return False, f"❌ {cmd} недоступна\n\nПроверь:\n• установлен Termux:API\n• выданы разрешения\n• приложение Termux:API запущено"
+        return True, ""
 
     if text == "🟢 Пинг":
-        await msg.edit_text("pong")
-        return
+        out = "pong"
 
-    if text == "💻 Термукс":
-        context.user_data["mode"] = "termux"
-        await msg.edit_text("Введите команду Termux")
-        return
-
-    if mode == "termux":
-        ok, out = await run(text)
-        context.user_data["mode"] = None
-        await msg.edit_text(out if ok else f"❌ {out}")
-        return
-
-    if text == "📂 Файлы":
-        context.user_data["mode"] = "files"
-        await msg.edit_text(f"📂 {cwd}\n\nls | cd путь | cd ..")
-        return
-
-    if mode == "files":
-        if text.startswith("cd"):
-            path = text.replace("cd", "").strip()
-            if path == "..":
-                cwd = os.path.dirname(cwd)
-            else:
-                new = os.path.join(cwd, path)
-                if os.path.isdir(new):
-                    cwd = new
-                else:
-                    await msg.edit_text("❌ Папка не найдена")
-                    return
-            context.user_data["cwd"] = cwd
-            await msg.edit_text(f"📂 {cwd}")
-            return
-
-        ok, out = await run(f"cd '{cwd}' && {text}")
-        await msg.edit_text(out if ok else f"❌ {out}")
-        return
-
-    if text == "📸 Скриншот":
-        path = "/sdcard/screen.png"
-        ok, out = await run(f"termux-screenshot -f {path}")
-        if ok and os.path.exists(path):
-            await msg.delete()
-            await update.message.reply_photo(open(path, "rb"))
+    elif text == "🔋 Батарея":
+        ok, err = api_guard("termux-battery-status")
+        if ok:
+            ok, out = await run("termux-battery-status")
         else:
-            await msg.edit_text("❌ Termux API не отвечает")
-        return
+            out = err
 
-    if text == "🔌 ADB":
-        context.user_data["mode"] = "adb_ip"
-        await msg.edit_text("Введите IP")
-        return
+    elif text == "📡 Сеть":
+        ok, err = api_guard("termux-wifi-connectioninfo")
+        if ok:
+            ok, out = await run("termux-wifi-connectioninfo")
+        else:
+            out = err
 
-    if mode == "adb_ip":
-        context.user_data["adb_ip"] = text.strip()
-        context.user_data["mode"] = "adb_port"
-        await msg.edit_text("Введите PORT")
-        return
+    elif text == "📍 Геолокация":
+        ok, err = api_guard("termux-location")
+        if ok:
+            ok, out = await run("termux-location")
+        else:
+            out = err
 
-    if mode == "adb_port":
-        context.user_data["adb_port"] = text.strip()
-        context.user_data["mode"] = "adb_code"
-        await msg.edit_text("Введите CODE")
-        return
+    elif text == "🔊 Громкость":
+        ok, err = api_guard("termux-volume")
+        if ok:
+            ok, out = await run("termux-volume")
+        else:
+            out = err
 
-    if mode == "adb_code":
-        ip = context.user_data["adb_ip"]
-        port = context.user_data["adb_port"]
-        code = text.strip()
-        context.user_data["mode"] = None
-        ok, out = await run(f"adb pair {ip}:{port} {code}", timeout=15)
-        await msg.edit_text(out if ok else f"❌ {out}")
-        return
+    elif text == "📋 Буфер":
+        ok, err = api_guard("termux-clipboard-get")
+        if ok:
+            ok, out = await run("termux-clipboard-get")
+        else:
+            out = err
 
-    if text == "🛰 Watchdog":
-        ok, _ = await run("termux-info")
-        await msg.edit_text("API OK" if ok else "API FAIL")
-        return
+    elif text == "📷 Камера":
+        ok, err = api_guard("termux-camera-photo")
+        if not ok:
+            out = err
+        else:
+            path = "/sdcard/photo.jpg"
+            ok, out = await run(f"termux-camera-photo {path}")
+            if ok and os.path.exists(path):
+                await msg.delete()
+                await update.message.reply_photo(open(path, "rb"))
+                log(uid, text, "photo sent")
+                return
 
-    if text == "♻ Перезапуск":
-        await msg.edit_text("♻ Перезапуск...")
+    elif text == "📸 Скриншот":
+        ok, err = api_guard("termux-screenshot")
+        if not ok:
+            out = err
+        else:
+            path = "/sdcard/screen.png"
+            ok, out = await run(f"termux-screenshot -f {path}")
+            if ok and os.path.exists(path):
+                await msg.delete()
+                await update.message.reply_photo(open(path, "rb"))
+                log(uid, text, "screenshot sent")
+                return
+
+    elif text == "📱 Устройство":
+        ok, out = await run("getprop ro.product.model")
+
+    elif text == "📳 Вибрация":
+        ok, err = api_guard("termux-vibrate")
+        if ok:
+            ok, out = await run("termux-vibrate -d 500")
+            if ok:
+                out = "вибрация выполнена"
+        else:
+            out = err
+
+    elif text == "🔔 Уведомление":
+        ok, err = api_guard("termux-notification")
+        if ok:
+            ok, out = await run("termux-notification -t Bot -c Running")
+            if ok:
+                out = "уведомление отправлено"
+        else:
+            out = err
+
+    elif text == "🛰 Watchdog":
+        if cmd_exists("termux-battery-status"):
+            out = "watchdog: Termux API доступен"
+        else:
+            out = "watchdog: Termux API НЕ НАЙДЕН\nОткрой приложение Termux:API"
+
+    elif text == "♻ Перезапуск":
+        await msg.edit_text("♻ Перезапуск бота...")
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    else:
+        out = "неизвестная команда"
+
+    prog.cancel()
+    log(uid, text, out)
+    await msg.edit_text(out[:4000])
 
 def main():
     print("BOT ACTIVE")
@@ -184,4 +231,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    main()                        
