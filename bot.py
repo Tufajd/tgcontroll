@@ -1,6 +1,8 @@
 import subprocess
 import logging
 import socket
+import asyncio
+import time
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
@@ -20,31 +22,46 @@ def get_ip():
     except:
         return "unknown"
 
-def run(cmd):
+def log(user, cmd, result):
+    logging.info(f"user={user} | ip={get_ip()} | cmd='{cmd}' | result='{result[:200]}'")
+
+async def run(cmd, timeout=8):
     try:
-        r = subprocess.run(
+        proc = await asyncio.create_subprocess_shell(
             cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        return r.stdout.strip() or r.stderr.strip()
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return stdout.decode().strip() or stderr.decode().strip()
+    except asyncio.TimeoutError:
+        return "timeout"
     except Exception as e:
         return str(e)
 
-def log(user, cmd, result):
-    logging.info(
-        f"user={user} | ip={get_ip()} | cmd='{cmd}' | result='{result[:200]}'"
-    )
+async def progress_percent(msg, duration=4.0):
+    start = time.time()
+    while True:
+        elapsed = time.time() - start
+        p = min(int((elapsed / duration) * 100), 99)
+        bars = int(p / 10)
+        bar = "▰" * bars + "▱" * (10 - bars)
+        try:
+            await msg.edit_text(f"⏳ Выполняется...\n{bar} {p}%")
+        except:
+            pass
+        if p >= 99:
+            break
+        await asyncio.sleep(0.3)
 
 keyboard = ReplyKeyboardMarkup(
     [
-        ["🔋 Батарея", "📡 Сеть"],
-        ["📍 Геолокация", "🔊 Громкость"],
-        ["📋 Буфер", "📷 Камера"],
-        ["📂 Файлы", "📱 Устройство"],
-        ["📳 Вибрация", "🔔 Уведомление"],
+        ["🟢 Пинг", "🔋 Батарея"],
+        ["📡 Сеть", "📍 Геолокация"],
+        ["🔊 Громкость", "📋 Буфер"],
+        ["📷 Камера", "📂 Файлы"],
+        ["📱 Устройство", "📳 Вибрация"],
+        ["🔔 Уведомление"],
     ],
     resize_keyboard=True
 )
@@ -52,10 +69,7 @@ keyboard = ReplyKeyboardMarkup(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS:
         return
-    await update.message.reply_text(
-        "🤖 Termux Control Bot",
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("🤖 Termux Control Bot", reply_markup=keyboard)
 
 async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS:
@@ -64,38 +78,46 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     uid = update.effective_user.id
 
-    if text == "🔋 Батарея":
-        out = run("termux-battery-status")
+    msg = await update.message.reply_text("⏳ Выполняется...\n▱▱▱▱▱▱▱▱▱▱ 0%")
+    prog = asyncio.create_task(progress_percent(msg))
+
+    if text == "🟢 Пинг":
+        out = "pong"
+    elif text == "🔋 Батарея":
+        out = await run("termux-battery-status")
     elif text == "📡 Сеть":
-        out = run("termux-wifi-connectioninfo")
+        out = await run("termux-wifi-connectioninfo")
     elif text == "📍 Геолокация":
-        out = run("termux-location")
+        out = await run("termux-location")
     elif text == "🔊 Громкость":
-        out = run("termux-volume")
+        out = await run("termux-volume")
     elif text == "📋 Буфер":
-        out = run("termux-clipboard-get")
+        out = await run("termux-clipboard-get")
     elif text == "📷 Камера":
-        run("termux-camera-photo /sdcard/photo.jpg")
+        await run("termux-camera-photo /sdcard/photo.jpg")
         out = "saved /sdcard/photo.jpg"
     elif text == "📂 Файлы":
-        out = run("ls /sdcard | head")
+        out = await run("ls /sdcard | head")
     elif text == "📱 Устройство":
-        out = run("getprop ro.product.model")
+        out = await run("getprop ro.product.model")
     elif text == "📳 Вибрация":
-        out = run("termux-vibrate -d 500")
+        await run("termux-vibrate -d 500")
+        out = "ok"
     elif text == "🔔 Уведомление":
-        out = run("termux-notification -t Bot -c Running")
+        await run("termux-notification -t Bot -c Running")
+        out = "sent"
     else:
         out = "unknown command"
 
+    prog.cancel()
     log(uid, text, out)
-    await update.message.reply_text(out[:4000])
+    await msg.edit_text(out[:4000])
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
-    print("BOT STARTED")
+    print("Бот активирован🫩")
     app.run_polling()
 
 if __name__ == "__main__":
