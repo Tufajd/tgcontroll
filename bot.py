@@ -2,6 +2,9 @@ import os
 import subprocess
 import logging
 import socket
+import asyncio
+import time
+import sys
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -10,23 +13,24 @@ TOKEN = "7566074976:AAE-Oj3Vo7BRz6eMG8S2nyjta05S-ZpmqGA"
 ALLOWED_USERS = [6504292955]
 
 BASE_DIR = os.getcwd()
+CWD = BASE_DIR
 DOWNLOAD_DIR = "/storage/emulated/0/TG_Manager"
 LOG_DIR = "logs"
-LOG_FILE = f"{LOG_DIR}/session.log"
+LOG_FILE = f"{LOG_DIR}/actions.log"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
-CWD = BASE_DIR
+ENV = os.environ.copy()
+ENV["PATH"] = "/data/data/com.termux/files/usr/bin:" + ENV.get("PATH", "")
 
 logging.basicConfig(
     filename=LOG_FILE,
     level=logging.INFO,
-    format="%(asctime)s | %(message)s",
+    format="%(asctime)s | %(message)s"
 )
 
-def log(user, cmd, result):
-    logging.info(f"user={user} | cmd='{cmd}' | result='{result}'")
+print("🤖 BOT ACTIVE (TERMUX)")
 
 def get_ip():
     try:
@@ -34,145 +38,187 @@ def get_ip():
     except:
         return "unknown"
 
-MAIN_KB = ReplyKeyboardMarkup(
-    [["📁 Менеджер", "📡 Пинг"], ["📊 Выполняется"]],
+def log(user, cmd, result):
+    logging.info(f"user={user} | ip={get_ip()} | cmd='{cmd}' | result='{result[:200]}'")
+
+async def run(cmd, timeout=10, retries=2):
+    for _ in range(retries):
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=CWD,
+                env=ENV
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            out = stdout.decode().strip() or stderr.decode().strip()
+            if out:
+                return out
+        except asyncio.TimeoutError:
+            continue
+        except Exception as e:
+            return str(e)
+    return "watchdog: command failed"
+
+async def watchdog_check():
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            "termux-battery-status",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=ENV
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=5)
+        return True
+    except:
+        return False
+
+async def progress(msg, duration=4.0):
+    start = time.time()
+    while True:
+        p = min(int(((time.time() - start) / duration) * 100), 99)
+        bar = "▰" * (p // 10) + "▱" * (10 - p // 10)
+        try:
+            await msg.edit_text(f"⏳ Выполняется...\n{bar} {p}%")
+        except:
+            pass
+        if p >= 99:
+            break
+        await asyncio.sleep(0.3)
+
+KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🟢 Пинг", "🔋 Батарея"],
+        ["📡 Сеть", "📍 Геолокация"],
+        ["🔊 Громкость", "📋 Буфер"],
+        ["📷 Камера", "📂 Файлы"],
+        ["📱 Устройство", "📳 Вибрация"],
+        ["🔔 Уведомление"],
+        ["📁 Менеджер", "🖥 Термукс"],
+        ["📡 Watchdog", "♻️ Перезапуск"]
+    ],
     resize_keyboard=True
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
-    c = update.effective_chat
+    if u.id not in ALLOWED_USERS:
+        return
     now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     text = (
         "Бот успешно запущен и готов к работе\n\n"
         f"Дата: {now}\n"
         f"Пользователь: {u.username}\n"
         f"ID пользователя: {u.id}\n"
-        f"ID чата: {c.id}"
+        f"ID чата: {update.effective_chat.id}"
     )
-    await update.message.reply_text(text, reply_markup=MAIN_KB)
+    await update.message.reply_text(text, reply_markup=KEYBOARD)
 
-async def manager_info(update: Update):
-    text = (
-        "📁 Менеджер\n\n"
-        "ls (показать файлы)\n"
-        "пример: ls\n\n"
-        "cd путь (перейти в папку)\n"
-        "пример: cd Download\n\n"
-        "cd .. (на уровень выше)\n\n"
-        "pwd (текущий путь)\n\n"
-        "get файл (отправить файл)\n"
-        "пример: get test.txt\n\n"
-        "rm файл (удалить)\n"
-        "пример: rm old.txt\n\n"
-        "mv старое новое (переименовать)\n"
-        "пример: mv a.txt b.txt\n\n"
-        "mkdir имя (создать папку)\n"
-        "пример: mkdir test\n\n"
-        "touch имя (создать файл)\n"
-        "пример: touch a.txt\n\n"
-        "wget ссылка (скачать файл)\n"
-        f"Все загрузки → {DOWNLOAD_DIR}"
-    )
-    await update.message.reply_text(text)
-
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global CWD
-    user = update.effective_user.id
-    if user not in ALLOWED_USERS:
+    uid = update.effective_user.id
+    if uid not in ALLOWED_USERS:
         return
 
     text = update.message.text.strip()
-
-    if text == "📁 Менеджер":
-        await manager_info(update)
-        return
-
-    if text == "📡 Пинг":
-        await update.message.reply_text("pong")
-        return
-
-    if text == "📊 Выполняется":
-        await update.message.reply_text("бот активен")
-        return
+    msg = await update.message.reply_text("⏳ Выполняется...\n▱▱▱▱▱▱▱▱▱▱ 0%")
+    prog = asyncio.create_task(progress(msg))
 
     try:
-        if text == "pwd":
-            await update.message.reply_text(CWD)
-            log(user, text, "ok")
-            return
+        if text == "🟢 Пинг":
+            out = "pong"
 
-        if text == "ls":
-            out = "\n".join(os.listdir(CWD))
-            await update.message.reply_text(out or "пусто")
-            log(user, text, "ok")
-            return
+        elif text == "📡 Watchdog":
+            ok = await watchdog_check()
+            out = "termux api ok" if ok else "termux api not responding"
 
-        if text.startswith("cd "):
-            path = text[3:].strip()
-            if path == "..":
+        elif text == "♻️ Перезапуск":
+            log(uid, "restart", "manual")
+            await msg.edit_text("♻️ Перезапуск бота...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        elif text == "🔋 Батарея":
+            out = await run("termux-battery-status")
+
+        elif text == "📡 Сеть":
+            out = await run("termux-wifi-connectioninfo")
+
+        elif text == "📍 Геолокация":
+            out = await run("termux-location")
+
+        elif text == "🔊 Громкость":
+            out = await run("termux-volume")
+
+        elif text == "📋 Буфер":
+            out = await run("termux-clipboard-get")
+
+        elif text == "📷 Камера":
+            await run("termux-camera-photo /sdcard/photo.jpg")
+            out = "saved /sdcard/photo.jpg"
+
+        elif text == "📂 Файлы":
+            out = await run("ls /sdcard | head")
+
+        elif text == "📱 Устройство":
+            out = await run("getprop ro.product.model")
+
+        elif text == "📳 Вибрация":
+            await run("termux-vibrate -d 500")
+            out = "ok"
+
+        elif text == "🔔 Уведомление":
+            await run("termux-notification -t Bot -c Running")
+            out = "sent"
+
+        elif text == "📁 Менеджер":
+            out = "ls | cd путь | cd .. | pwd | get файл | rm файл | mv a b | mkdir имя | touch имя | wget ссылка"
+
+        elif text == "pwd":
+            out = CWD
+
+        elif text == "ls":
+            out = "\n".join(os.listdir(CWD)) or "пусто"
+
+        elif text.startswith("cd "):
+            p = text[3:].strip()
+            if p == "..":
                 CWD = os.path.dirname(CWD)
+                out = CWD
             else:
-                new = os.path.abspath(os.path.join(CWD, path))
-                if not os.path.isdir(new):
-                    await update.message.reply_text("нет такой папки")
-                    log(user, text, "fail")
-                    return
-                CWD = new
-            await update.message.reply_text(CWD)
-            log(user, text, "ok")
-            return
+                np = os.path.abspath(os.path.join(CWD, p))
+                if os.path.isdir(np):
+                    CWD = np
+                    out = CWD
+                else:
+                    out = "нет такой папки"
 
-        if text.startswith("mkdir "):
-            os.mkdir(os.path.join(CWD, text[6:].strip()))
-            await update.message.reply_text("создано")
-            log(user, text, "ok")
-            return
+        elif text.startswith("wget "):
+            out = await run(f"wget -P {DOWNLOAD_DIR} {text[5:].strip()}")
 
-        if text.startswith("touch "):
-            open(os.path.join(CWD, text[6:].strip()), "a").close()
-            await update.message.reply_text("создано")
-            log(user, text, "ok")
-            return
+        elif text.startswith("get "):
+            f = os.path.join(CWD, text[4:].strip())
+            await update.message.reply_document(InputFile(f))
+            out = "sent"
 
-        if text.startswith("rm "):
-            os.remove(os.path.join(CWD, text[3:].strip()))
-            await update.message.reply_text("удалено")
-            log(user, text, "ok")
-            return
+        else:
+            out = await run(text)
 
-        if text.startswith("mv "):
-            _, a, b = text.split(maxsplit=2)
-            os.rename(os.path.join(CWD, a), os.path.join(CWD, b))
-            await update.message.reply_text("готово")
-            log(user, text, "ok")
-            return
-
-        if text.startswith("get "):
-            path = os.path.join(CWD, text[4:].strip())
-            await update.message.reply_document(InputFile(path))
-            log(user, text, "ok")
-            return
-
-        if text.startswith("wget "):
-            url = text[5:].strip()
-            subprocess.run(
-                ["wget", "-P", DOWNLOAD_DIR, url],
-                timeout=20
-            )
-            await update.message.reply_text(f"скачано в {DOWNLOAD_DIR}")
-            log(user, text, "ok")
-            return
-
-        await update.message.reply_text("неизвестная команда")
-        log(user, text, "unknown")
+        log(uid, text, out)
 
     except Exception as e:
-        await update.message.reply_text(f"ошибка: {e}")
-        log(user, text, "error")
+        out = f"error: {e}"
+        log(uid, text, out)
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    prog.cancel()
+    await msg.edit_text(out[:4000] or "ok")
 
-app.run_polling()
+while True:
+    try:
+        app = ApplicationBuilder().token(TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+        app.run_polling()
+    except Exception as e:
+        logging.info(f"watchdog restart: {e}")
+        time.sleep(3)
