@@ -1,14 +1,23 @@
+import os
 import subprocess
 import logging
 import socket
-import asyncio
-import time
-from telegram import Update, ReplyKeyboardMarkup
+from datetime import datetime
+from telegram import Update, ReplyKeyboardMarkup, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = "7566074976:AAE-Oj3Vo7BRz6eMG8S2nyjta05S-ZpmqGA"
 ALLOWED_USERS = [6504292955]
-LOG_FILE = "logs/actions.log"
+
+BASE_DIR = os.getcwd()
+DOWNLOAD_DIR = "/storage/emulated/0/TG_Manager"
+LOG_DIR = "logs"
+LOG_FILE = f"{LOG_DIR}/session.log"
+
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+CWD = BASE_DIR
 
 logging.basicConfig(
     filename=LOG_FILE,
@@ -16,109 +25,154 @@ logging.basicConfig(
     format="%(asctime)s | %(message)s",
 )
 
+def log(user, cmd, result):
+    logging.info(f"user={user} | cmd='{cmd}' | result='{result}'")
+
 def get_ip():
     try:
         return socket.gethostbyname(socket.gethostname())
     except:
         return "unknown"
 
-def log(user, cmd, result):
-    logging.info(f"user={user} | ip={get_ip()} | cmd='{cmd}' | result='{result[:200]}'")
-
-async def run(cmd, timeout=8):
-    try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        return stdout.decode().strip() or stderr.decode().strip()
-    except asyncio.TimeoutError:
-        return "timeout"
-    except Exception as e:
-        return str(e)
-
-async def progress_percent(msg, duration=4.0):
-    start = time.time()
-    while True:
-        elapsed = time.time() - start
-        p = min(int((elapsed / duration) * 100), 99)
-        bars = int(p / 10)
-        bar = "▰" * bars + "▱" * (10 - bars)
-        try:
-            await msg.edit_text(f"⏳ Выполняется...\n{bar} {p}%")
-        except:
-            pass
-        if p >= 99:
-            break
-        await asyncio.sleep(0.3)
-
-keyboard = ReplyKeyboardMarkup(
-    [
-        ["🟢 Пинг", "🔋 Батарея"],
-        ["📡 Сеть", "📍 Геолокация"],
-        ["🔊 Громкость", "📋 Буфер"],
-        ["📷 Камера", "📂 Файлы"],
-        ["📱 Устройство", "📳 Вибрация"],
-        ["🔔 Уведомление"],
-    ],
+MAIN_KB = ReplyKeyboardMarkup(
+    [["📁 Менеджер", "📡 Пинг"], ["📊 Выполняется"]],
     resize_keyboard=True
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ALLOWED_USERS:
+    u = update.effective_user
+    c = update.effective_chat
+    now = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+    text = (
+        "Бот успешно запущен и готов к работе\n\n"
+        f"Дата: {now}\n"
+        f"Пользователь: {u.username}\n"
+        f"ID пользователя: {u.id}\n"
+        f"ID чата: {c.id}"
+    )
+    await update.message.reply_text(text, reply_markup=MAIN_KB)
+
+async def manager_info(update: Update):
+    text = (
+        "📁 Менеджер\n\n"
+        "ls (показать файлы)\n"
+        "пример: ls\n\n"
+        "cd путь (перейти в папку)\n"
+        "пример: cd Download\n\n"
+        "cd .. (на уровень выше)\n\n"
+        "pwd (текущий путь)\n\n"
+        "get файл (отправить файл)\n"
+        "пример: get test.txt\n\n"
+        "rm файл (удалить)\n"
+        "пример: rm old.txt\n\n"
+        "mv старое новое (переименовать)\n"
+        "пример: mv a.txt b.txt\n\n"
+        "mkdir имя (создать папку)\n"
+        "пример: mkdir test\n\n"
+        "touch имя (создать файл)\n"
+        "пример: touch a.txt\n\n"
+        "wget ссылка (скачать файл)\n"
+        f"Все загрузки → {DOWNLOAD_DIR}"
+    )
+    await update.message.reply_text(text)
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CWD
+    user = update.effective_user.id
+    if user not in ALLOWED_USERS:
         return
-    await update.message.reply_text("🤖 Termux Control Bot", reply_markup=keyboard)
 
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ALLOWED_USERS:
+    text = update.message.text.strip()
+
+    if text == "📁 Менеджер":
+        await manager_info(update)
         return
 
-    text = update.message.text
-    uid = update.effective_user.id
+    if text == "📡 Пинг":
+        await update.message.reply_text("pong")
+        return
 
-    msg = await update.message.reply_text("⏳ Выполняется...\n▱▱▱▱▱▱▱▱▱▱ 0%")
-    prog = asyncio.create_task(progress_percent(msg))
+    if text == "📊 Выполняется":
+        await update.message.reply_text("бот активен")
+        return
 
-    if text == "🟢 Пинг":
-        out = "pong"
-    elif text == "🔋 Батарея":
-        out = await run("termux-battery-status")
-    elif text == "📡 Сеть":
-        out = await run("termux-wifi-connectioninfo")
-    elif text == "📍 Геолокация":
-        out = await run("termux-location")
-    elif text == "🔊 Громкость":
-        out = await run("termux-volume")
-    elif text == "📋 Буфер":
-        out = await run("termux-clipboard-get")
-    elif text == "📷 Камера":
-        await run("termux-camera-photo /sdcard/photo.jpg")
-        out = "saved /sdcard/photo.jpg"
-    elif text == "📂 Файлы":
-        out = await run("ls /sdcard | head")
-    elif text == "📱 Устройство":
-        out = await run("getprop ro.product.model")
-    elif text == "📳 Вибрация":
-        await run("termux-vibrate -d 500")
-        out = "ok"
-    elif text == "🔔 Уведомление":
-        await run("termux-notification -t Bot -c Running")
-        out = "sent"
-    else:
-        out = "unknown command"
+    try:
+        if text == "pwd":
+            await update.message.reply_text(CWD)
+            log(user, text, "ok")
+            return
 
-    prog.cancel()
-    log(uid, text, out)
-    await msg.edit_text(out[:4000])
+        if text == "ls":
+            out = "\n".join(os.listdir(CWD))
+            await update.message.reply_text(out or "пусто")
+            log(user, text, "ok")
+            return
 
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
-    print("Бот активирован🫩")
-    app.run_polling()
+        if text.startswith("cd "):
+            path = text[3:].strip()
+            if path == "..":
+                CWD = os.path.dirname(CWD)
+            else:
+                new = os.path.abspath(os.path.join(CWD, path))
+                if not os.path.isdir(new):
+                    await update.message.reply_text("нет такой папки")
+                    log(user, text, "fail")
+                    return
+                CWD = new
+            await update.message.reply_text(CWD)
+            log(user, text, "ok")
+            return
 
-if __name__ == "__main__":
-    main()
+        if text.startswith("mkdir "):
+            os.mkdir(os.path.join(CWD, text[6:].strip()))
+            await update.message.reply_text("создано")
+            log(user, text, "ok")
+            return
+
+        if text.startswith("touch "):
+            open(os.path.join(CWD, text[6:].strip()), "a").close()
+            await update.message.reply_text("создано")
+            log(user, text, "ok")
+            return
+
+        if text.startswith("rm "):
+            os.remove(os.path.join(CWD, text[3:].strip()))
+            await update.message.reply_text("удалено")
+            log(user, text, "ok")
+            return
+
+        if text.startswith("mv "):
+            _, a, b = text.split(maxsplit=2)
+            os.rename(os.path.join(CWD, a), os.path.join(CWD, b))
+            await update.message.reply_text("готово")
+            log(user, text, "ok")
+            return
+
+        if text.startswith("get "):
+            path = os.path.join(CWD, text[4:].strip())
+            await update.message.reply_document(InputFile(path))
+            log(user, text, "ok")
+            return
+
+        if text.startswith("wget "):
+            url = text[5:].strip()
+            subprocess.run(
+                ["wget", "-P", DOWNLOAD_DIR, url],
+                timeout=20
+            )
+            await update.message.reply_text(f"скачано в {DOWNLOAD_DIR}")
+            log(user, text, "ok")
+            return
+
+        await update.message.reply_text("неизвестная команда")
+        log(user, text, "unknown")
+
+    except Exception as e:
+        await update.message.reply_text(f"ошибка: {e}")
+        log(user, text, "error")
+
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+app.run_polling()
