@@ -5,7 +5,7 @@ import socket
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
-TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+TOKEN = "7566074976:AAE-Oj3Vo7BRz6eMG8S2nyjta05S-ZpmqGA"
 ALLOWED_USERS = [6504292955]
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
