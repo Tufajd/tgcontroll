@@ -1,16 +1,16 @@
 import os
 import subprocess
 import logging
+import datetime
 import socket
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "7566074976:AAE-Oj3Vo7BRz6eMG8S2nyjta05S-ZpmqGA"
 ALLOWED_USERS = [6504292955]
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-LOG_FILE = os.path.join(LOG_DIR, "actions.log")
+LOG_DIR = "logs"
+LOG_FILE = f"{LOG_DIR}/actions.log"
 
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -20,53 +20,37 @@ logging.basicConfig(
     format="%(asctime)s | %(message)s"
 )
 
-def get_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except:
-        return "unknown"
-
-def log(user, cmd, result):
-    logging.info(
-        f"user={user.id} | ip={get_ip()} | cmd='{cmd}' | result='{result}'"
-    )
-
-def allowed(update: Update):
-    return update.effective_user and update.effective_user.id in ALLOWED_USERS
+def log(action, user):
+    ip = socket.gethostbyname(socket.gethostname())
+    logging.info(f"user={user} ip={ip} action={action}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allowed(update):
+    if update.effective_user.id not in ALLOWED_USERS:
         return
     await update.message.reply_text(
-        "🤖 Termux Controller Bot\n\n"
+        "📱 Termux Controller Bot\n\n"
         "Команды:\n"
         "скриншот\n"
         "батарея\n"
         "память\n"
         "shell <команда>\n"
-        "файл <путь>\n"
         "лог"
     )
 
-async def screenshot(update: Update):
-    path = "/sdcard/screen.png"
+async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    log("screenshot", user)
     try:
-        subprocess.run(
-            ["termux-screenshot", "-f", path],
-            check=True
-        )
-        with open(path, "rb") as f:
-            await update.message.reply_photo(f)
-        log(update.effective_user, "screenshot", "ok")
+        path = "/sdcard/termux_screen.png"
+        subprocess.run(["termux-screenshot", path], check=True)
+        await update.message.reply_photo(photo=open(path, "rb"))
+        os.remove(path)
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        log(update.effective_user, "screenshot", "error")
+        await update.message.reply_text(f"Ошибка: {e}")
 
-async def battery(update: Update):
+async def battery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    log("battery", user)
     try:
         r = subprocess.run(
             ["termux-battery-status"],
@@ -74,90 +58,68 @@ async def battery(update: Update):
             text=True
         )
         await update.message.reply_text(r.stdout)
-        log(update.effective_user, "battery", "ok")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        log(update.effective_user, "battery", "error")
+        await update.message.reply_text(f"Ошибка: {e}")
 
-async def memory(update: Update):
-    try:
-        r = subprocess.run(
-            ["free", "-h"],
-            capture_output=True,
-            text=True
-        )
-        await update.message.reply_text(f"```\n{r.stdout}\n```", parse_mode="Markdown")
-        log(update.effective_user, "memory", "ok")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        log(update.effective_user, "memory", "error")
+async def memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    log("memory", user)
+    r = subprocess.run(["free", "-h"], capture_output=True, text=True)
+    await update.message.reply_text(f"```\n{r.stdout}\n```", parse_mode="Markdown")
 
-async def shell(update: Update, cmd: str):
+async def shell(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user.id
+    if not context.args:
+        await update.message.reply_text("shell <команда>")
+        return
+    cmd = " ".join(context.args)
+    log(f"shell: {cmd}", user)
     try:
         r = subprocess.run(
             cmd,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=8
+            timeout=15
         )
-        out = (r.stdout or r.stderr).strip()[:3500]
-        await update.message.reply_text(
-            f"```\n{out if out else 'OK'}\n```",
-            parse_mode="Markdown"
-        )
-        log(update.effective_user, cmd, "ok")
-    except subprocess.TimeoutExpired:
-        await update.message.reply_text("⏰ Таймаут")
-        log(update.effective_user, cmd, "timeout")
+        out = r.stdout or r.stderr or "пусто"
+        await update.message.reply_text(f"```\n{out[:4000]}\n```", parse_mode="Markdown")
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-        log(update.effective_user, cmd, "error")
+        await update.message.reply_text(f"Ошибка: {e}")
 
-async def send_log(update: Update):
-    try:
-        with open(LOG_FILE, "rb") as f:
-            await update.message.reply_document(f)
-    except:
-        await update.message.reply_text("❌ Лог пуст или недоступен")
+async def show_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not os.path.exists(LOG_FILE):
+        await update.message.reply_text("Лог пуст")
+        return
+    with open(LOG_FILE, "r") as f:
+        data = f.read()[-4000:]
+    await update.message.reply_text(f"```\n{data}\n```", parse_mode="Markdown")
 
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not allowed(update):
+async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ALLOWED_USERS:
         return
 
-    text = update.message.text.strip()
+    text = update.message.text.strip().lower()
 
     if text == "скриншот":
-        await screenshot(update)
-
+        await screenshot(update, context)
     elif text == "батарея":
-        await battery(update)
-
+        await battery(update, context)
     elif text == "память":
-        await memory(update)
-
+        await memory(update, context)
     elif text.startswith("shell "):
-        await shell(update, text[6:])
-
-    elif text.startswith("файл "):
-        path = text[5:]
-        try:
-            with open(path, "rb") as f:
-                await update.message.reply_document(f)
-        except:
-            await update.message.reply_text("❌ Файл не найден")
-
+        context.args = text.split()[1:]
+        await shell(update, context)
     elif text == "лог":
-        await send_log(update)
-
+        await show_log(update, context)
     else:
-        await update.message.reply_text("❌ Неизвестная команда")
+        await update.message.reply_text("Неизвестная команда")
 
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-    print("🤖 Бот запущен")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handler))
+    print("🤖 Bot started")
     app.run_polling()
 
 if __name__ == "__main__":
