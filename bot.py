@@ -37,17 +37,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "лог"
     )
 
-async def screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
-    log("screenshot", user)
-    try:
-        path = "/sdcard/termux_screen.png"
-        subprocess.run(["termux-screenshot", path], check=True)
-        await update.message.reply_photo(photo=open(path, "rb"))
-        os.remove(path)
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
 async def battery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.id
     log("battery", user)
@@ -101,8 +90,6 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip().lower()
 
-    if text == "скриншот":
-        await screenshot(update, context)
     elif text == "батарея":
         await battery(update, context)
     elif text == "память":
