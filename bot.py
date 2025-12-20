@@ -90,18 +90,21 @@ async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip().lower()
 
-    elif text == "батарея":
+    if text == "батарея":
         await battery(update, context)
+
     elif text == "память":
         await memory(update, context)
+
     elif text.startswith("shell "):
         context.args = text.split()[1:]
         await shell(update, context)
+
     elif text == "лог":
         await show_log(update, context)
+
     else:
         await update.message.reply_text("Неизвестная команда")
-
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
